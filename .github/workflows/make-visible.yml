@@ -1,0 +1,14 @@
+name: Make Workflows Visible
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - prod
+
+jobs:
+  make-visible:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake up GitHub Actions for this branch
+        run: echo "Workflows are now visible for branch: $GITHUB_REF_NAME"
