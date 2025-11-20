@@ -5,6 +5,7 @@ on:
     branches-ignore:
       - main
       - prod
+      - uat
 
 jobs:
   make-visible:
