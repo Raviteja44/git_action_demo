@@ -2,15 +2,9 @@ name: "1. Deploy Feature to Dev"
 
 on:
   workflow_dispatch:
-    inputs:
-      feature_branch:
-        description: 'Your feature branch name'
-        required: true
-        type: string
-      deployment_reason:
-        description: 'Reason for deployment'
-        required: true
-        type: string
+  push:
+    branches:
+      - '**'
 
 permissions:
   contents: write
@@ -31,7 +25,6 @@ jobs:
           FEATURE_BRANCH="${{ github.event.inputs.feature_branch }}"
           echo "Validating feature branch: $FEATURE_BRANCH"
           
-          # Check if branch exists
           if ! git show-ref --verify --quiet refs/remotes/origin/$FEATURE_BRANCH 2>/dev/null; then
             echo "❌ Error: Branch '$FEATURE_BRANCH' does not exist"
             exit 1
@@ -45,21 +38,20 @@ jobs:
           FEATURE_BRANCH="${{ github.event.inputs.feature_branch }}"
           git fetch origin $FEATURE_BRANCH
           git fetch origin dev
-          
-          # Get commits that are only in feature branch
+
           COMMITS=$(git log origin/dev..origin/$FEATURE_BRANCH --oneline --reverse 2>/dev/null | head -20)
           COMMIT_COUNT=$(git rev-list --count origin/dev..origin/$FEATURE_BRANCH 2>/dev/null || echo "0")
           LATEST_COMMIT=$(git rev-parse origin/$FEATURE_BRANCH)
-          
+
           {
             echo "commits<<EOF"
             echo "$COMMITS"
             echo "EOF"
           } >> $GITHUB_OUTPUT
-          
+
           echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
           echo "latest_commit=$LATEST_COMMIT" >> $GITHUB_OUTPUT
-          
+
           echo "📋 Your commits to deploy:"
           echo "$COMMITS"
 
@@ -72,27 +64,27 @@ jobs:
             const commitCount = '${{ steps.get-commits.outputs.commit_count }}';
             const commits = `${{ steps.get-commits.outputs.commits }}`;
             const latestCommit = '${{ steps.get-commits.outputs.latest_commit }}';
-            
+
             const prBody = `
             ## 🚀 Deployment to DEV Environment
             **Feature Branch:** ${featureBranch}
             **Your Commits to Deploy:** ${commitCount}
             **Latest Commit:** ${latestCommit}
             **Deployment Reason:** ${deploymentReason}
-            
+
             ### Your Changes:
             \`\`\`
             ${commits}
             \`\`\`
-            
+
             **COMMIT_SHA:** ${latestCommit}
             **FEATURE_BRANCH:** ${featureBranch}
-            
+
             **Save this information for UAT promotion.**
-            
+
             **Approval Required:** Please review and approve this deployment.
             `;
-            
+
             const { data: pr } = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -101,11 +93,11 @@ jobs:
               head: featureBranch,
               base: 'dev'
             });
-            
+
             console.log(`✅ Created DEV deployment PR: ${pr.html_url}`);
             console.log(`💡 COMMIT SHA: ${latestCommit}`);
             console.log(`💡 FEATURE BRANCH: ${featureBranch}`);
-            
+
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
