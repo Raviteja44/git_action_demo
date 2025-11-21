@@ -3,8 +3,12 @@ name: "2. Promote to UAT"
 on:
   workflow_dispatch:
     inputs:
-      dev_pr_number:
-        description: 'DEV PR number that was merged (find in Pull Requests tab)'
+      feature_branch:
+        description: 'Your original feature branch name'
+        required: true
+        type: string
+      dev_commit_sha:
+        description: 'Commit SHA that was tested in DEV (from the DEV PR)'
         required: true
         type: string
       deployment_reason:
@@ -26,93 +30,53 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get PR info from DEV PR
-        id: get-pr-info
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = '${{ github.event.inputs.dev_pr_number }}';
-            
-            try {
-              const { data: pr } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber
-              });
-              
-              console.log('🔍 PR Body:', pr.body);
-              
-              // Extract commit SHA and feature branch from PR body - FIXED REGEX
-              const body = pr.body;
-              
-              // Look for both possible formats
-              const commitMatch = body.match(/\*\*COMMIT_SHA:\*\* ([a-f0-9]+)/) || 
-                                 body.match(/\*\*Commit SHA:\*\* \`([a-f0-9]+)\`/) ||
-                                 body.match(/\*\*Latest Commit:\*\* ([a-f0-9]+)/);
-              
-              const branchMatch = body.match(/\*\*FEATURE_BRANCH:\*\* ([^\s]+)/) || 
-                                 body.match(/\*\*Feature Branch:\*\* \`([^\`]+)\`/) ||
-                                 body.match(/\*\*Feature Branch:\*\* ([^\s]+)/);
-              
-              if (!commitMatch) {
-                console.error('❌ Could not find commit SHA in PR description');
-                console.error('Available patterns in PR body:');
-                console.error(body);
-                throw new Error('Could not find commit SHA in PR description');
-              }
-              
-              if (!branchMatch) {
-                console.error('❌ Could not find feature branch in PR description');
-                throw new Error('Could not find feature branch in PR description');
-              }
-              
-              const commitSha = commitMatch[1];
-              const featureBranch = branchMatch[1];
-              
-              console.log(`✅ Found DEV PR info:`);
-              console.log(`   Feature Branch: ${featureBranch}`);
-              console.log(`   Commit SHA: ${commitSha}`);
-              
-              // Set outputs
-              core.setOutput('commit_sha', commitSha);
-              core.setOutput('feature_branch', featureBranch);
-              core.setOutput('pr_title', pr.title);
-              
-            } catch (error) {
-              console.error('❌ Error getting PR info:', error);
-              throw new Error(`Failed to get DEV PR #${prNumber}. Make sure it exists and contains commit info.`);
-            }
-
-      - name: Validate commit
-        id: validate-commit
+      - name: Validate commit belongs to feature branch
+        id: validate
         run: |
-          COMMIT_SHA="${{ steps.get-pr-info.outputs.commit_sha }}"
-          FEATURE_BRANCH="${{ steps.get-pr-info.outputs.feature_branch }}"
+          FEATURE_BRANCH="${{ github.event.inputs.feature_branch }}"
+          COMMIT_SHA="${{ github.event.inputs.dev_commit_sha }}"
           
-          echo "Validating commit: $COMMIT_SHA from $FEATURE_BRANCH"
+          echo "Validating commit $COMMIT_SHA belongs to $FEATURE_BRANCH"
           
-          # Verify commit exists and is in dev
-          git fetch origin dev
-          if ! git merge-base --is-ancestor $COMMIT_SHA origin/dev 2>/dev/null; then
-            echo "❌ Error: Commit $COMMIT_SHA is not in dev branch"
+          # Verify commit exists
+          if ! git cat-file -e $COMMIT_SHA^{commit} 2>/dev/null; then
+            echo "❌ Error: Commit $COMMIT_SHA does not exist"
             exit 1
           fi
           
-          echo "✅ Commit validated"
+          # Verify commit is in the feature branch
+          git fetch origin $FEATURE_BRANCH
+          if ! git merge-base --is-ancestor $COMMIT_SHA origin/$FEATURE_BRANCH 2>/dev/null; then
+            echo "❌ Error: Commit $COMMIT_SHA is not in feature branch $FEATURE_BRANCH"
+            exit 1
+          fi
+          
+          # Verify commit is in dev branch (was deployed to dev)
+          git fetch origin dev
+          if ! git merge-base --is-ancestor $COMMIT_SHA origin/dev 2>/dev/null; then
+            echo "❌ Error: Commit $COMMIT_SHA is not in dev branch"
+            echo "💡 Make sure this commit was deployed to DEV first"
+            exit 1
+          fi
+          
+          # Get commit details
+          COMMIT_INFO=$(git log $COMMIT_SHA -1 --format="%h - %s - %an - %ad")
+          echo "commit_info=$COMMIT_INFO" >> $GITHUB_OUTPUT
+          echo "✅ Commit validated: $COMMIT_INFO"
 
-      - name: Create UAT PR
+      - name: Create UAT PR with specific commit
         uses: actions/github-script@v7
         with:
           script: |
-            const commitSha = '${{ steps.get-pr-info.outputs.commit_sha }}';
-            const featureBranch = '${{ steps.get-pr-info.outputs.feature_branch }}';
-            const prTitle = '${{ steps.get-pr-info.outputs.pr_title }}';
+            const featureBranch = '${{ github.event.inputs.feature_branch }}';
+            const commitSha = '${{ github.event.inputs.dev_commit_sha }}';
             const deploymentReason = '${{ github.event.inputs.deployment_reason }}';
+            const commitInfo = '${{ steps.validate.outputs.commit_info }}';
             
-            // Create UAT branch
-            const uatBranch = `uat-${featureBranch.replace(/\//g, '-')}-${Date.now()}`;
+            // Create promotion branch
+            const promoteBranch = `promote/uat-${featureBranch.replace(/\//g, '-')}-${Date.now()}`;
             
-            // Get current uat
+            // Get current uat branch
             const { data: uatRef } = await github.rest.repos.getBranch({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -123,30 +87,29 @@ jobs:
             await github.rest.git.createRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: `refs/heads/${uatBranch}`,
+              ref: `refs/heads/${promoteBranch}`,
               sha: uatRef.commit.sha
             });
             
-            // Merge the specific commit
+            // Merge the specific commit that was tested in DEV
             await github.rest.repos.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              base: uatBranch,
+              base: promoteBranch,
               head: commitSha
             });
             
             const prBody = `
             ## 🟡 Promotion to UAT Environment
-            **Source:** ${prTitle}
             **Feature Branch:** ${featureBranch}
             **Commit SHA:** ${commitSha}
+            **Commit Details:** ${commitInfo}
             **Promotion Reason:** ${deploymentReason}
             
-            **COMMIT_SHA:** ${commitSha}
-            **FEATURE_BRANCH:** ${featureBranch}
+            **This contains ONLY your specific changes that were tested in DEV.**
             
             **Verification:**
-            ✅ Deployed to DEV
+            ✅ Deployed to DEV: ${commitSha.substring(0, 8)}
             ✅ Tested in DEV Environment
             
             **Approval Required:** Manager/Team Lead approval required.
@@ -155,9 +118,9 @@ jobs:
             const { data: pr } = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `🟡 UAT: Promote ${featureBranch}`,
+              title: `🟡 UAT: Promote ${featureBranch} (${commitSha.substring(0, 8)})`,
               body: prBody,
-              head: uatBranch,
+              head: promoteBranch,
               base: 'uat'
             });
             
@@ -167,5 +130,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr.number,
-              labels: ['uat-promotion']
+              labels: ['uat-promotion', 'specific-commit']
             });
