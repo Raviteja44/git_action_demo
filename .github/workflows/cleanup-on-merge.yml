@@ -4,6 +4,9 @@ on:
   pull_request:
     types: [closed]
 
+permissions:
+  contents: write  # This grants branch deletion permissions
+
 jobs:
   cleanup:
     if: github.event.pull_request.merged == true
@@ -26,7 +29,7 @@ jobs:
                 });
                 console.log(`✅ Deleted temporary branch: ${headBranch}`);
               } catch (error) {
-                console.log(`ℹ️ Branch ${headBranch} might already be deleted: ${error.message}`);
+                console.log(`❌ Failed to delete branch ${headBranch}: ${error.message}`);
               }
             } else {
               console.log(`ℹ️ Skipping deletion of non-temporary branch: ${headBranch}`);
